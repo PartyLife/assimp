@@ -9,7 +9,7 @@ __Importers__:
 - [AC3D](https://en.wikipedia.org/wiki/AC3D)
 - ACC
 - AMJ
-- ASE
+- ASE (see [ASE Workflow Documentation](ASE_WORKFLOW.md))
 - ASK
 - B3D
 - [BVH](https://en.wikipedia.org/wiki/Biovision_Hierarchy)
