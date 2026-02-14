@@ -53,6 +53,189 @@ ASE files are text-based 3D scene descriptions exported from 3ds Max. The format
 5. **Camera**: Camera with FOV, near/far planes, and animation data
 6. **Animation**: Keyframe animation data for position, rotation, and scaling
 
+## Visual Workflow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        ASE File Import Workflow                      │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────┐
+│  ASE File (.ase)│
+│  Text-based 3D  │
+│  Scene Export   │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ STEP 1: File Loading (ASEImporter::InternReadFile)                  │
+│                                                                       │
+│  • Open file via IOSystem                                            │
+│  • Read entire file into memory buffer                               │
+│  • Determine format version (.asc=v110, .ase=v200)                  │
+│  • Create ASE::Parser instance with buffer                           │
+└────────┬──────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ STEP 2: Token-Based Parsing (Parser::Parse)                         │
+│                                                                       │
+│  Main parsing loop processes hierarchical blocks:                    │
+│  ┌────────────────────────────────────────────────────┐             │
+│  │ *3DSMAX_ASCIIEXPORT → File format version         │             │
+│  │ *SCENE              → Scene settings               │             │
+│  │ *MATERIAL_LIST      → All materials                │             │
+│  │ *GEOMOBJECT         → Mesh objects                 │             │
+│  │ *LIGHTOBJECT        → Light sources                │             │
+│  │ *CAMERAOBJECT       → Camera objects               │             │
+│  │ *HELPEROBJECT       → Dummy/helper objects         │             │
+│  └────────────────────────────────────────────────────┘             │
+│                                                                       │
+│  Parsing Hierarchy:                                                  │
+│  Level 1 (LV1) → Top-level blocks (scene, objects, materials)       │
+│  Level 2 (LV2) → Object properties (transform, mesh, animation)     │
+│  Level 3 (LV3) → Detailed data (vertices, faces, UVs, normals)      │
+│  Level 4 (LV4) → Primitive values (floats, integers, vectors)       │
+│                                                                       │
+│  Output: Populated data structures in Parser members:               │
+│  • m_vMeshes (vector<Mesh>)                                          │
+│  • m_vMaterials (vector<Material>)                                   │
+│  • m_vLights (vector<Light>)                                         │
+│  • m_vCameras (vector<Camera>)                                       │
+│  • m_vDummies (vector<Dummy>)                                        │
+└────────┬──────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ STEP 3: Mesh Processing                                             │
+│                                                                       │
+│  For each mesh in m_vMeshes:                                         │
+│  ┌─────────────────────────────────────────────────────┐            │
+│  │ BuildUniqueRepresentation()                         │            │
+│  │  • Eliminate duplicate vertices                     │            │
+│  │  • Create unified vertex/normal/UV/color indices    │            │
+│  │  • Ensure each vertex is unique                     │            │
+│  └─────────────────────────────────────────────────────┘            │
+│           │                                                           │
+│           ▼                                                           │
+│  ┌─────────────────────────────────────────────────────┐            │
+│  │ GenerateNormals()                                   │            │
+│  │  • Check if normals exist in file                   │            │
+│  │  • Generate smooth normals based on smoothing groups│            │
+│  │  • Optional: Force recompute via config flag        │            │
+│  └─────────────────────────────────────────────────────┘            │
+│           │                                                           │
+│           ▼                                                           │
+│  ┌─────────────────────────────────────────────────────┐            │
+│  │ ConvertMeshes()                                     │            │
+│  │  • Split mesh by material (one aiMesh per material) │            │
+│  │  • Create vertex buffers (pos, normal, UV, color)   │            │
+│  │  • Set up face indices                              │            │
+│  │  • Assign material indices                          │            │
+│  └─────────────────────────────────────────────────────┘            │
+│                                                                       │
+│  Output: vector<aiMesh*> avOutMeshes                                │
+└────────┬──────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ STEP 4: Material Processing                                         │
+│                                                                       │
+│  BuildMaterialIndices()                                              │
+│  • Resolve material references                                       │
+│  • Handle submaterials                                               │
+│  • Create final material list                                        │
+│  • Convert ASE::Material → aiMaterial                                │
+│                                                                       │
+│  For each material:                                                  │
+│  • Set colors (diffuse, specular, ambient)                           │
+│  • Set material properties (shininess, transparency)                 │
+│  • Load texture maps (diffuse, specular, bump, etc.)                 │
+│                                                                       │
+│  Output: scene->mMaterials[], scene->mNumMaterials                   │
+└────────┬──────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ STEP 5: Scene Graph Construction                                    │
+│                                                                       │
+│  Collect all nodes:                                                  │
+│  nodes = [meshes] + [lights] + [cameras] + [dummies]                │
+│                                                                       │
+│  BuildNodes()                                                        │
+│  • Create hierarchical node structure (aiNode tree)                  │
+│  • Process parent-child relationships                                │
+│  • Apply transformation matrices                                     │
+│  • Attach meshes to nodes                                            │
+│                                                                       │
+│  Node Hierarchy Example:                                             │
+│  RootNode                                                            │
+│    ├─ Node1 (Mesh: Box01)                                            │
+│    ├─ Node2 (Mesh: Sphere01)                                         │
+│    │   └─ Node3 (Light: Light01)                                     │
+│    └─ Node4 (Camera: Camera01)                                       │
+│                                                                       │
+│  Output: scene->mRootNode (complete node hierarchy)                  │
+└────────┬──────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ STEP 6: Animation Processing                                        │
+│                                                                       │
+│  BuildAnimations()                                                   │
+│  • Create aiAnimation objects                                        │
+│  • Set up animation channels for each animated node                  │
+│  • Convert keyframe data:                                            │
+│    - Position keys (akeyPositions)                                   │
+│    - Rotation keys (akeyRotations)                                   │
+│    - Scaling keys (akeyScaling)                                      │
+│  • Handle animation types (Track, Bezier, TCB)                       │
+│  • Process target animations for lights/cameras                      │
+│                                                                       │
+│  Output: scene->mAnimations[], scene->mNumAnimations                 │
+└────────┬──────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ STEP 7: Asset Creation (Lights & Cameras)                           │
+│                                                                       │
+│  BuildLights()                                                       │
+│  • Convert ASE::Light → aiLight                                      │
+│  • Set light type (omni, directional, spot)                          │
+│  • Set color and intensity                                           │
+│  • Set position and direction                                        │
+│  • Set attenuation parameters                                        │
+│                                                                       │
+│  BuildCameras()                                                      │
+│  • Convert ASE::Camera → aiCamera                                    │
+│  • Set FOV (field of view)                                           │
+│  • Set near/far clip planes                                          │
+│  • Set position and look-at direction                                │
+│  • Handle target cameras                                             │
+│                                                                       │
+│  Output:                                                             │
+│  • scene->mLights[], scene->mNumLights                               │
+│  • scene->mCameras[], scene->mNumCameras                             │
+└────────┬──────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ FINAL OUTPUT: Complete aiScene Structure                            │
+│                                                                       │
+│  aiScene                                                             │
+│  ├─ mRootNode       → Scene hierarchy (tree of aiNode)               │
+│  ├─ mMeshes[]       → Array of aiMesh objects                        │
+│  ├─ mMaterials[]    → Array of aiMaterial objects                    │
+│  ├─ mAnimations[]   → Array of aiAnimation objects                   │
+│  ├─ mLights[]       → Array of aiLight objects                       │
+│  ├─ mCameras[]      → Array of aiCamera objects                      │
+│  ├─ mTextures[]     → Embedded textures (if any)                     │
+│  └─ mMetaData       → Scene metadata                                 │
+│                                                                       │
+│  Ready for use in your application!                                  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
 ## Complete Workflow
 
 ### 1. File Loading (ASEImporter::InternReadFile)
